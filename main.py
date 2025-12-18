@@ -295,6 +295,7 @@ def main():
                     existing_order['qty'] = existing_order['qty_remaining'] 
                 else:
                     current_orders.append({
+                        "order_id": new_order.get('order_id', ''),  # 【新增】訂單編號
                         "product": new_order['product'],
                         "qty": new_order['qty'],
                         "qty_remaining": new_order['qty'],
@@ -347,7 +348,10 @@ def main():
                 continue
             
             if rush_type == 'A':
+                # 【新增】生成臨時訂單編號
+                temp_order_id = f"RUSH-{datetime.now().strftime('%Y%m%d%H%M%S')}"
                 initial_rush_order = {
+                    "order_id": temp_order_id,  # 【新增】臨時訂單編號
                     "product": p_name, 
                     "qty": qty, 
                     "is_rush": True,
@@ -366,8 +370,10 @@ def main():
                     current_orders
                     current_orders = [o for o in current_orders if o['product'] != p_name]
 
-                    # 2. 創建新的 rush_order 項目
+                    # 2. 創建新的 rush_order 項目（保留原訂單的 order_id）
+                    original_order_id = found_orders[0].get('order_id', '')  # 【新增】取得原訂單的 order_id
                     new_rush_order_item = {
+                         "order_id": original_order_id,  # 【新增】保留原訂單編號
                          "product": p_name, 
                          "qty": qty, 
                          "is_rush": True,
@@ -487,6 +493,7 @@ def main():
             # 4. 根據回報更新訂單狀態 (current_orders) 並檢查是否落後
             lagging_jobs_count = 0
             new_rush_orders = []
+            lagging_products = set()  # 【新增】記錄落後的產品
             
             for product_data in progress_data:
                 product_name = product_data['產品型號']
@@ -506,17 +513,24 @@ def main():
                     
                     if new_qty_remaining > 0:
                          new_rush_orders.append({
+                            "order_id": current_order.get('order_id', ''),
                             "product": product_name, 
-                            "qty": new_qty_remaining,  # 總數量
-                            "qty_remaining": new_qty_remaining,  # 【新增】剩餘數量
+                            "qty": new_qty_remaining,
+                            "qty_remaining": new_qty_remaining,
                             "is_rush": True,
                             "qty_total": current_order.get('qty', total_qty) 
                         })
                     lagging_jobs_count += 1
+                    lagging_products.add(product_name)  # 【新增】標記為落後
                 
+                # 【修改】更新訂單的剩餘數量
                 current_order['qty_remaining'] = new_qty_remaining
             
-            current_orders = [o for o in current_orders if o['qty_remaining'] > 0]
+            # 【修改】過濾 current_orders：移除落後的產品（它們已經在 rush_orders 裡）
+            current_orders = [
+                o for o in current_orders 
+                if o['qty_remaining'] > 0 and o['product'] not in lagging_products
+            ]
             
             # 5. 重排邏輯
             if lagging_jobs_count > 0:

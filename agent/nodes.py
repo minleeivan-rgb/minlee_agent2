@@ -339,7 +339,9 @@ def _run_global_simulation(all_jobs, config_settings):
                 "Status": output_status, 
                 "Note": "⚡" if job['is_rush'] else "",
                 "Actual_Hours": actual_hours,
-                "Complete_Percent": "0%"
+                "Complete_Percent": "0%",
+                "plan_to": job.get('line', 'Line 1'),
+                "priority": "rush" if job.get('is_rush') else "normal"
             })
         
         # === 第二階段：用剩餘人力排小工序（<4人），可以增派人力加速 ===
@@ -409,7 +411,9 @@ def _run_global_simulation(all_jobs, config_settings):
                 "Status": output_status, 
                 "Note": "⚡" if job['is_rush'] else "",
                 "Actual_Hours": actual_hours,
-                "Complete_Percent": "0%"
+                "Complete_Percent": "0%",
+                "plan_to": job.get('line', 'Line 1'),
+                "priority": "rush" if job.get('is_rush') else "normal"
             })
 
         pending_jobs = next_day_pending

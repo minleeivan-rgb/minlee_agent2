@@ -45,15 +45,17 @@ def _create_jobs_list(all_orders: List[Dict[str, Any]], inventory: Dict[str, Dic
     """
     根據訂單和產能資料庫，建立所有工序清單 (all_jobs)。
     
-    【關鍵修正】確保返回三個值 (all_jobs, product_to_jobs, unknown_models)
+    【關鍵修正】使用 LLM 智能匹配產品名稱，而不是簡單的字串比對
     """
     all_jobs = []
     unknown_models = set()
     product_to_jobs = defaultdict(list)
     
+    # 準備 inventory 的產品列表（用於 LLM 匹配）
+    inventory_products = list(inventory.keys())
+    
     for order in all_orders:
         p_name = order.get('product', 'Unknown')
-        p_name_norm = normalize(p_name)
         
         # 剩餘量 (實際要排的量)
         qty_val = order.get('qty_remaining', order.get('qty', 0)) 
@@ -63,27 +65,85 @@ def _create_jobs_list(all_orders: List[Dict[str, Any]], inventory: Dict[str, Dic
         if qty_val <= 0:
             continue
         
-        matching_jobs = False
-        for inv_key, spec in inventory.items():
-            if p_name_norm in normalize(inv_key): 
-                matching_jobs = True
+        # 【使用 LLM 智能匹配】
+        try:
+            prompt = f"""你是產品名稱匹配專家。
+
+訂單產品名稱: {p_name}
+
+可用的工序列表:
+{chr(10).join(f"- {inv_key}" for inv_key in inventory_products)}
+
+請找出所有與訂單產品名稱匹配的工序。比對規則：
+1. 產品型號一致（忽略破折號、空格、大小寫）
+2. 顏色、規格等描述可以不同，只要型號一致就算匹配
+3. 例如："T-304 BLACK (90)" 應該匹配 "T304一線", "T304二線" 等所有 T304 開頭的工序
+
+請只回傳匹配的工序名稱，用換行分隔，不要有其他內容。如果沒有匹配的工序，回傳 "NONE"。"""
+
+            response = llm.invoke(prompt)
+            matched_keys_text = response.content.strip()
+            
+            if matched_keys_text == "NONE" or not matched_keys_text:
+                unknown_models.add(p_name)
+                continue
+            
+            # 解析 LLM 回傳的匹配工序
+            matched_keys = [line.strip().strip('-').strip() for line in matched_keys_text.split('\n') if line.strip()]
+            
+            matching_jobs = False
+            for inv_key in matched_keys:
+                if inv_key in inventory:
+                    matching_jobs = True
+                    spec = inventory[inv_key]
+                    
+                    all_jobs.append({
+                        "order_id": order.get('order_id', ''),
+                        "raw_product_name": p_name, 
+                        "display_name": inv_key,    
+                        "line": spec.get('line', 'Line 1'),
+                        "uph": spec['uph'],
+                        "qty_total": qty_total,       
+                        "qty_remaining": qty_val, 
+                        "headcount": spec['headcount'],
+                        "is_rush": order.get('is_rush', False),
+                        "due_date": order.get('due_date')
+                    })
+                    product_to_jobs[normalize(p_name)].append(inv_key)
+            
+            if not matching_jobs:
+                unknown_models.add(p_name)
                 
-                all_jobs.append({
-                    "order_id": order.get('order_id', ''),  # 【新增】訂單編號
-                    "raw_product_name": p_name, 
-                    "display_name": inv_key,    
-                    "line": spec.get('line', 'Line 1'),
-                    "uph": spec['uph'],
-                    "qty_total": qty_total,       
-                    "qty_remaining": qty_val, 
-                    "headcount": spec['headcount'],
-                    "is_rush": order.get('is_rush', False),
-                    "due_date": order.get('due_date')
-                })
-                product_to_jobs[p_name_norm].append(inv_key) 
-        
-        if not matching_jobs:
-            unknown_models.add(p_name)
+        except Exception as e:
+            print(f"⚠️ LLM 匹配失敗 ({p_name}): {e}")
+            # 【備用方案】如果 LLM 失敗，使用簡單的字串匹配
+            p_name_norm = normalize(p_name)
+            matching_jobs = False
+            for inv_key, spec in inventory.items():
+                inv_key_norm = normalize(inv_key)
+                inv_product_code = inv_key_norm
+                for suffix in ['一線', '二線', '三線', '四線', '裝', '線']:
+                    inv_product_code = inv_product_code.replace(suffix, '')
+                
+                if inv_product_code and inv_product_code in p_name_norm:
+                    matching_jobs = True
+                    
+                    all_jobs.append({
+                        "order_id": order.get('order_id', ''),
+                        "raw_product_name": p_name, 
+                        "display_name": inv_key,    
+                        "line": spec.get('line', 'Line 1'),
+                        "uph": spec['uph'],
+                        "qty_total": qty_total,       
+                        "qty_remaining": qty_val, 
+                        "headcount": spec['headcount'],
+                        "is_rush": order.get('is_rush', False),
+                        "due_date": order.get('due_date')
+                    })
+                    product_to_jobs[p_name_norm].append(inv_key)
+            
+            if not matching_jobs:
+                unknown_models.add(p_name)
             
     # 排序：急單優先 (is_rush=True) -> 截止日期優先 (due_date)
     all_jobs.sort(key=lambda x: (

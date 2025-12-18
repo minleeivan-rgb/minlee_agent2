@@ -33,6 +33,7 @@ INVENTORY_DATA = {
     "T302一線": {"uph": 400, "headcount": 6, "line": "Line 1"},
     "T309一線": {"uph": 800, "headcount": 6, "line": "Line 1"},
     "T323一線": {"uph": 900, "headcount": 7, "line": "Line 1"},
+    "T323DST一線": {"uph": 900, "headcount": 7, "line": "Line 1"},
     "T500一線": {"uph": 900, "headcount": 7, "line": "Line 1"},
     "TW300/TW500一線": {"uph": 900, "headcount": 6, "line": "Line 1"},
     "TW501一線": {"uph": 900, "headcount": 5, "line": "Line 1"},
@@ -69,6 +70,7 @@ INVENTORY_DATA = {
     
     "T309二線": {"uph": 700, "headcount": 11, "line": "Line 2"},
     "T323二線": {"uph": 900, "headcount": 14, "line": "Line 2"},
+    "T323DST二線": {"uph": 900, "headcount": 14, "line": "Line 2"},
     "T500二線": {"uph": 1000, "headcount": 11, "line": "Line 2"},
     
     "E-LATCH 60137二線": {"uph": 900, "headcount": 8, "line": "Line 2"},

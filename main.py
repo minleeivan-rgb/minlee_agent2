@@ -40,8 +40,8 @@ def save_schedule_to_file(df):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"schedule_report_{timestamp}.txt"
         
-        # 【修改】加入 order_id 欄位（12 個欄位）
-        cols = ["Day", "order_id", "Product", "Headcount", "Actual_Hours", "plan_to", "Output", "Complete_Percent", "Idle_People", "Status", "Note", "priority"]
+        # 定義新的 11 個欄位順序 (與 Google Sheets 寫入順序一致)
+        cols = ["Day", "Product", "Headcount", "Actual_Hours", "plan_to", "Output", "Complete_Percent", "Idle_People", "Status", "Note", "priority"]
         
         df_display = df[[c for c in cols if c in df.columns]]
         table_text = tabulate(df_display, headers='keys', tablefmt='psql', showindex=False)
@@ -169,14 +169,14 @@ def show_result(result, db_instance: GoogleSheetsDB):
     """顯示排程結果並將最新的訂單、急單和排程結果存回資料庫"""
     
     if result.get('schedule_result'):
-        # result['schedule_result'] 已經是扁平化的 list，直接使用
+        # schedule_result 是一個列表，每個元素已經包含 Day 和 Idle_People
         flat_schedule = result['schedule_result']
 
         # 1. 顯示排程表到終端機
         print("\n--- 📅 最新排程表 (含閒置人力計算) ---")
         df = pd.DataFrame(flat_schedule)
-        # 【修改】加入 order_id 欄位（12 個欄位）
-        cols = ["Day", "order_id", "Product", "Headcount", "Actual_Hours", "plan_to", "Output", "Complete_Percent", "Idle_People", "Status", "Note", "priority"]
+        # 嚴格遵循 11 欄位順序
+        cols = ["Day", "Product", "Headcount", "Actual_Hours", "plan_to", "Output", "Complete_Percent", "Idle_People", "Status", "Note", "priority"]
         df = df[[c for c in cols if c in df.columns]]
         
         print(tabulate(df, headers='keys', tablefmt='psql', showindex=False))
@@ -195,8 +195,7 @@ def show_result(result, db_instance: GoogleSheetsDB):
         db_instance.save_orders(updated_orders, updated_rush_orders)
         
         # 4. 儲存 SystemData 
-        # 【移除】不再儲存 last_schedule_results，因為資料太大會超過 Google Sheets 限制
-        # last_schedule_results 會從 percentage(daily_schedule) 工作表直接讀取
+        db_instance.save_system_data('last_schedule_results', flat_schedule)
         db_instance.save_system_data('last_schedule_date', datetime.now().strftime("%Y-%m-%d"))
         
         # 5. 儲存到本地檔案
@@ -239,11 +238,6 @@ def main():
     if not last_schedule_date or not isinstance(last_schedule_date, str):
         last_schedule_date = datetime.now().strftime("%Y-%m-%d")
 
-    # 【修改】從 Google Sheets 讀取 last_schedule_results
-    last_schedule_results = []
-    if db_ready:
-        last_schedule_results = db.load_schedule_results()
-
     initial_state = {
         "logs": ["系統啟動"],
         "image_path": "",
@@ -252,7 +246,7 @@ def main():
         "rush_orders": rush_orders,
         "daily_feedback": {}, 
         "last_schedule_date": last_schedule_date,
-        "last_schedule_results": last_schedule_results  # 從 Google Sheets 讀取
+        "last_schedule_results": system_data.get('last_schedule_results', [])
     }
     
     print("\n=========================================")
@@ -298,13 +292,9 @@ def main():
                 if existing_order:
                     print(f"⚠️ 產品 {new_order['product']} 已存在，更新剩餘數量。")
                     existing_order['qty_remaining'] += new_order['qty']
-                    existing_order['qty'] = existing_order['qty_remaining']
-                    # 【新增】如果現有訂單沒有 order_id，則更新
-                    if not existing_order.get('order_id'):
-                        existing_order['order_id'] = new_order.get('order_id', '')
+                    existing_order['qty'] = existing_order['qty_remaining'] 
                 else:
                     current_orders.append({
-                        "order_id": new_order.get('order_id', ''),  # 【新增】訂單編號
                         "product": new_order['product'],
                         "qty": new_order['qty'],
                         "qty_remaining": new_order['qty'],
@@ -322,6 +312,11 @@ def main():
 
             result = app.invoke(initial_state)
             show_result(result, db)
+            
+            # 【重要】更新 initial_state 的 last_schedule_results
+            initial_state['last_schedule_results'] = result.get('schedule_result', [])
+            current_orders = result.get('orders', current_orders)
+            rush_orders = result.get('rush_orders', rush_orders)
             
         # --- 選項 2: 急單 (新增/舊單轉急單 & 重排) ---
         elif choice == "2":
@@ -353,7 +348,6 @@ def main():
             
             if rush_type == 'A':
                 initial_rush_order = {
-                    "order_id": "",  # 【新增】新急單可能沒有 order_id，留空
                     "product": p_name, 
                     "qty": qty, 
                     "is_rush": True,
@@ -372,9 +366,8 @@ def main():
                     current_orders
                     current_orders = [o for o in current_orders if o['product'] != p_name]
 
-                    # 2. 創建新的 rush_order 項目（保留 order_id）
+                    # 2. 創建新的 rush_order 項目
                     new_rush_order_item = {
-                         "order_id": found_orders[0].get('order_id', ''),  # 【新增】從原訂單複製 order_id
                          "product": p_name, 
                          "qty": qty, 
                          "is_rush": True,
@@ -401,6 +394,11 @@ def main():
             result = app.invoke(initial_state)
             show_result(result, db)
             
+            # 【重要】更新 initial_state 的 last_schedule_results
+            initial_state['last_schedule_results'] = result.get('schedule_result', [])
+            current_orders = result.get('orders', current_orders)
+            rush_orders = result.get('rush_orders', rush_orders)
+            
         # --- 選項 3: 回報昨日產能 & 調整排程 ---
         elif choice == "3":
             if not db_ready:
@@ -409,7 +407,7 @@ def main():
 
             print("\n--- 📝 每日生產進度回報 ---")
             
-            # 【修改】從 Google Sheets 重新讀取最新的排程結果（避免累積舊資料）
+            # 【修改】從 Google Sheets 重新讀取最新的排程結果，而不是只依賴 initial_state
             last_schedule_results = db.load_schedule_results()
             
             if not last_schedule_results:
@@ -417,174 +415,130 @@ def main():
                 continue
 
             # 1. 手動輸入要回報的天數
-            # 【修改】過濾掉 Day 為空的記錄
-            valid_schedule = [job for job in last_schedule_results if job.get('Day') and job['Day'].strip()]
-            
-            if not valid_schedule:
-                print("⚠️ 錯誤: 排程資料格式錯誤，無法讀取 Day 欄位。")
-                continue
-            
             max_day_in_schedule = max(
-                (int(job['Day'].split(' ')[-1]) for job in valid_schedule), 
+                (int(job['Day'].split(' ')[-1]) for job in last_schedule_results if job.get('Day')), 
                 default=0
             )
 
-            days_to_report_input = input(f"請輸入要回報到第幾天 (上次排程排到 Day {max_day_in_schedule}): ")
+            days_to_check_input = input(f"請輸入要檢查【累積到 Day 幾】的進度 (上次排程排到 Day {max_day_in_schedule}): ")
             try:
-                days_to_report = int(days_to_report_input)
-                if days_to_report <= 0 or days_to_report > max_day_in_schedule:
-                     print(f"❌ 請輸入有效的天數 (1 到 {max_day_in_schedule})。")
+                days_to_check = int(days_to_check_input)
+                if days_to_check <= 0:
+                     print("❌ 請輸入有效的正整數天數。")
                      continue
             except ValueError:
                 print("❌ 輸入無效，請輸入一個整數。")
                 continue
+                
 
-            print(f"\n⏰ 正在回報 Day 1 到 Day {days_to_report} 的生產進度...")
+            print(f"⏰ 正在檢查 Day 1 到 Day {days_to_check} 的【累積】進度...")
 
-            # 2. 找出 Day 1 到 Day N 中所有排程的工序（按工序，不是按產品）
-            tasks_in_period = []
-            for task in valid_schedule:
-                day_str = task.get('Day', '')
-                if not day_str or not day_str.strip():
-                    continue
-                    
-                try:
-                    day_num = int(day_str.split(' ')[-1])
-                except (ValueError, IndexError):
-                    continue
-                    
-                if 1 <= day_num <= days_to_report:
-                    tasks_in_period.append({
-                        'Product': task.get('Product', ''),  # 工序名稱
-                        'Raw_Product_Name': task.get('Raw_Product_Name', ''),  # 產品名稱
-                        'Output': task.get('Output', 0),  # 計劃產量
-                        'Day': day_str
-                    })
-
-            if not tasks_in_period:
-                print("⚠️ 在該期間內沒有找到任何排程的工序。")
+            # 2. 顯示應做進度報告 (基於上次排程結果)
+            progress_data_combined = show_progress_report(last_schedule_results, current_orders, days_to_check)
+            
+            if not progress_data_combined:
                 continue
 
-            print(f"\n📋 Day 1 到 Day {days_to_report} 期間共有 {len(tasks_in_period)} 個工序需要回報實際產量：")
-            for idx, task in enumerate(tasks_in_period, 1):
-                # 【修改】移除符號
-                task_name_clean = task['Product'].replace("✅ ", "").replace("☑️ ", "").replace("💡 ", "").strip()
-                print(f"  {idx}. {task_name_clean} (計劃: {task['Output']} pcs)")
-
-            # 3. 針對每個工序，詢問實際完成數量
-            print("\n--- 💬 請輸入各工序的實際完成數量 ---")
-            actual_output_by_task = {}
-
-            for task in tasks_in_period:
-                task_name_raw = task['Product']
-                # 【修改】清理工序名稱，移除符號
-                task_name = task_name_raw.replace("✅ ", "").replace("☑️ ", "").replace("💡 ", "").strip()
-                planned_output = task['Output']
-
-                qty_input = input(f"工序【{task_name}】實際完成數量 (pcs) (計劃: {planned_output}): ")
-                try:
-                    actual_qty = int(qty_input.strip())
-                    if actual_qty < 0:
-                        print(f"❌ 數量不能為負數，設為 0。")
-                        actual_qty = 0
-                    actual_output_by_task[task_name] = {
-                        'actual': actual_qty,
-                        'product': task['Raw_Product_Name']
-                    }
-                except ValueError:
-                    print(f"❌ 輸入無效，設為 0。")
-                    actual_output_by_task[task_name] = {
-                        'actual': 0,
-                        'product': task['Raw_Product_Name']
-                    }
-
-            # 4. 按產品分組，找出瓶頸工序（最小值）
-            print("\n--- 📊 計算各產品的實際完成量（瓶頸工序）---")
-            actual_output_by_product = {}
+            progress_data = progress_data_combined['progress_data']
+            planned_jobs_by_display_name = progress_data_combined['planned_jobs_by_display_name']
             
-            for task_name, data in actual_output_by_task.items():
-                product_name = data['product']
-                actual_qty = data['actual']
+            # 3. 讓使用者【按工序】回報當日產量
+            print("\n--- 實際產量回報 (按工序) ---")
+            
+            scheduled_jobs_for_report = sorted(planned_jobs_by_display_name.keys())
+            real_output_by_product_name = defaultdict(int)
+            actual_output_by_task = {}  # 【新增】記錄每個工序的實際產量
+
+            for display_name in scheduled_jobs_for_report:
+                job_info = planned_jobs_by_display_name[display_name]
+                raw_product = job_info['raw_product']
+                planned_output = job_info['planned_output']
                 
-                if product_name not in actual_output_by_product:
-                    actual_output_by_product[product_name] = actual_qty
-                else:
-                    # 取最小值（瓶頸工序）
-                    actual_output_by_product[product_name] = min(
-                        actual_output_by_product[product_name],
-                        actual_qty
-                    )
+                current_order_for_check = next((o for o in current_orders if o['product'] == raw_product), None)
+                if not current_order_for_check:
+                    continue
+                
+                qty_input = input(f"請輸入工序【{display_name}】累積到 Day {days_to_check} 的實際產出數量 (pcs) (排程應做 {planned_output} pcs): ")
+                try:
+                    job_actual_output = int(qty_input)
+                    
+                    real_output_by_product_name[raw_product] = max(real_output_by_product_name[raw_product], job_actual_output)
+                    
+                    # 【新增】記錄工序的實際產量
+                    actual_output_by_task[display_name] = {
+                        'actual': job_actual_output,
+                        'product': raw_product
+                    }
+                    
+                except ValueError:
+                    print(f"❌ 工序【{display_name}】輸入無效，設為 0。")
+                    # 【新增】輸入無效時也記錄為 0
+                    actual_output_by_task[display_name] = {
+                        'actual': 0,
+                        'product': raw_product
+                    }
             
-            for product_name, actual_qty in actual_output_by_product.items():
-                print(f"  {product_name}: 實際完成 {actual_qty} pcs（各工序最小值）")
+            # 【新增】將實際產量寫入 percent 工作表
+            if actual_output_by_task:
+                print("\n--- 💾 將實際產量寫入 percent 工作表 ---")
+                db.save_percent_data(actual_output_by_task, days_to_check, last_schedule_results, current_orders, rush_orders)
             
-            # 【新增】更新 Google Sheets 的 Actual_Output 和 Actual_Complete_Percent
-            print("\n--- 💾 更新 Google Sheets 的實際產量和完成百分比 ---")
-            db.update_actual_outputs(actual_output_by_task, days_to_report)
-
-            # 5. 根據實際產量更新訂單的剩餘量
-            print("\n--- 📊 更新訂單剩餘量 ---")
-            for product_name, actual_output in actual_output_by_product.items():
-                # 先在 current_orders 中找
+            
+            # 4. 根據回報更新訂單狀態 (current_orders) 並檢查是否落後
+            lagging_jobs_count = 0
+            new_rush_orders = []
+            
+            for product_data in progress_data:
+                product_name = product_data['產品型號']
+                total_qty = product_data['總訂單量']
+                
                 current_order = next((o for o in current_orders if o['product'] == product_name), None)
                 if not current_order:
-                    # 再在 rush_orders 中找
-                    current_order = next((o for o in rush_orders if o['product'] == product_name), None)
+                    continue 
 
-                if current_order:
-                    old_remaining = current_order.get('qty_remaining', current_order.get('qty', 0))
-                    new_remaining = max(0, old_remaining - actual_output)
-                    current_order['qty_remaining'] = new_remaining
-                    print(f"  {product_name}: 完成 {actual_output} pcs，剩餘 {old_remaining} → {new_remaining} pcs")
-
-            # 5. 移除剩餘量為 0 的訂單
-            current_orders = [o for o in current_orders if o.get('qty_remaining', 0) > 0]
-            rush_orders = [o for o in rush_orders if o.get('qty_remaining', 0) > 0]
-
-            # 6. 刪除 Day 1 到 Day N 的舊排程
-            print(f"\n🗑️ 刪除 Day 1 到 Day {days_to_report} 的舊排程...")
-            remaining_schedule = []
-            for task in valid_schedule:  # 【修改】使用 valid_schedule
-                day_str = task.get('Day', '')
-                if not day_str or not day_str.strip():
-                    continue
+                total_actual_output = real_output_by_product_name.get(product_name, 0)
+                new_qty_remaining = max(0, total_qty - total_actual_output)
+                planned_output = product_data['應做數量']
                 
-                try:
-                    day_num = int(day_str.split(' ')[-1])
-                    if day_num > days_to_report:
-                        remaining_schedule.append(task)
-                except (ValueError, IndexError):
-                    continue
+                if total_actual_output < planned_output:
+                    lagging_qty = planned_output - total_actual_output
+                    print(f"🚨 {product_name} 落後了 {lagging_qty} pcs！將剩餘訂單加入急單隊列。")
+                    
+                    if new_qty_remaining > 0:
+                         new_rush_orders.append({
+                            "product": product_name, 
+                            "qty": new_qty_remaining,  # 總數量
+                            "qty_remaining": new_qty_remaining,  # 【新增】剩餘數量
+                            "is_rush": True,
+                            "qty_total": current_order.get('qty', total_qty) 
+                        })
+                    lagging_jobs_count += 1
+                
+                current_order['qty_remaining'] = new_qty_remaining
             
-            # 更新 Day 編號（將 Day N+1 改為 Day 1）
-            if remaining_schedule:
-                try:
-                    min_day = min(int(task['Day'].split(' ')[-1]) for task in remaining_schedule)
-                    for task in remaining_schedule:
-                        old_day = int(task['Day'].split(' ')[-1])
-                        new_day = old_day - min_day + 1
-                        task['Day'] = f"Day {new_day}"
-                except (ValueError, IndexError) as e:
-                    print(f"⚠️ 更新 Day 編號時發生錯誤: {e}")
-                    remaining_schedule = []
-
-            # 7. 重新排程（排剩餘的訂單）
-            if current_orders or rush_orders:
-                print(f"\n🚀 正在重新排程剩餘訂單...")
-                print(f"  常規訂單: {len(current_orders)} 筆")
-                print(f"  急單: {len(rush_orders)} 筆")
-
+            current_orders = [o for o in current_orders if o['qty_remaining'] > 0]
+            
+            # 5. 重排邏輯
+            if lagging_jobs_count > 0:
+                rush_orders = new_rush_orders
+                
+                print(f"\n🚀 發現 {lagging_jobs_count} 個產品落後，正在觸發緊急重排...")
+                
                 initial_state["image_path"] = ""
-                initial_state["orders"] = current_orders
-                initial_state["rush_orders"] = rush_orders
-
+                initial_state["orders"] = current_orders 
+                initial_state["rush_orders"] = rush_orders 
+                
                 result = app.invoke(initial_state)
                 show_result(result, db)
+                
+                # 【重要】更新 initial_state 的 last_schedule_results
+                initial_state['last_schedule_results'] = result.get('schedule_result', [])
+                current_orders = result.get('orders', current_orders)
+                rush_orders = result.get('rush_orders', rush_orders)
             else:
-                print("🎉 所有訂單都已完成！無需重新排程。")
+                print("🎉 所有產品都已達標或超前！無需重排。")
                 db.save_orders(current_orders, rush_orders)
                 db.save_system_data('last_schedule_date', datetime.now().strftime("%Y-%m-%d"))
-
 
 
         elif choice == "4":

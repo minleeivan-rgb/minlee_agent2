@@ -9,7 +9,6 @@ from collections import defaultdict
 # 讀取設定檔
 config = configparser.ConfigParser()
 try:
-    # 嘗試讀取多個路徑以確保兼容性
     read_files = config.read(['config.ini', 'agent/config.ini', '../config.ini'])
     if not read_files:
         raise FileNotFoundError
@@ -49,8 +48,8 @@ class GoogleSheetsDB:
             print(f"✅ Google Sheets DB 連線成功: '{SHEET_NAME}'")
             
         except Exception as e:
-            print(f"❌ Google Sheets 連線或讀取錯誤: {e}")
-            raise # 拋出錯誤，讓 main.py 捕捉並處理
+            print(f"❌ Google Sheets 連線失敗: {e}")
+            raise
 
     def _get_worksheet(self, name):
         """取得或建立工作表。"""
@@ -63,21 +62,18 @@ class GoogleSheetsDB:
             
             # 依據工作表名稱設定標頭
             if name == READ_ORDERS_SHEET_NAME:
-                # 完整欄位: order_id, priority, customer_name, product_name, quantity, pending, Order_Date, status
-                ws.append_row(['order_id', 'priority', 'customer_name', 'product_name', 'quantity', 'pending', 'Order_Date', 'status']) 
+                ws.append_row(['order_id', 'priority', 'customer_name', 'product_name', 'quantity', 'pending', 'Order_Date', 'status'])
             elif name == SCHEDULE_WRITE_SHEET_NAME:
-                # percentage(daily_schedule) 工作表標頭
                 headers = ['Day', 'order_id', 'Product', 'Raw_Product_Name', 'Headcount', 'Actual_Hours', 'plan_to', 'Output', 'Complete_Percent', 'Idle_People', 'Status', 'Note', 'priority']
                 ws.append_row(headers)
             elif name == ORDERS_SHEET_NAME:
-                 ws.append_row(['order_id', 'product', 'qty', 'qty_remaining', 'is_rush', 'due_date', 'raw_packing_sheet', 'date_created'])  # 【修改】加入 order_id
+                ws.append_row(['order_id', 'product', 'qty', 'qty_remaining', 'is_rush', 'due_date', 'raw_packing_sheet', 'date_created'])
             elif name == RUSH_ORDERS_SHEET_NAME:
-                 ws.append_row(['order_id', 'product', 'qty', 'is_rush', 'qty_total', 'qty_remaining'])  # 【修改】加入 order_id
+                ws.append_row(['order_id', 'product', 'qty', 'is_rush', 'qty_total', 'qty_remaining'])
             elif name == SYSTEM_DATA_SHEET_NAME:
-                 ws.append_row(['key', 'value'])
+                ws.append_row(['key', 'value'])
             elif name == 'percent':
-                 # 【新增】實際產量追蹤表
-                 ws.append_row(['Day', 'order_id', 'Product', 'Raw_Product_Name', 'Planned_Output', 'Actual_Output', 'Total_Order_Qty', 'Actual_Complete_Percent', 'Report_Date'])
+                ws.append_row(['Day', 'order_id', 'Product', 'Raw_Product_Name', 'Planned_Output', 'Actual_Output', 'Total_Order_Qty', 'Actual_Complete_Percent', 'Report_Date'])
             return ws
 
     def _load_data(self, ws) -> List[Dict[str, Any]]:
@@ -86,21 +82,19 @@ class GoogleSheetsDB:
         try:
             if ws.row_count > 1:
                 data = ws.get_all_records()
-                # 嘗試將數值型別的欄位轉換
                 for record in data:
-                    for key in ['qty', 'qty_remaining', 'qty_total', 'quantity']: # 新增 'quantity' 支援 read_packing_sheet
+                    for key in ['qty', 'qty_remaining', 'qty_total', 'quantity']:
                         if key in record and record[key]:
                             try:
                                 record[key] = int(str(record[key]).replace(',', '').strip())
                             except ValueError:
-                                pass 
+                                pass
                 return data
             return []
         except Exception as e:
             print(f"❌ 載入工作表 '{ws.title}' 數據錯誤: {e}")
             return []
 
-    # --- 核心載入函式 ---
     def load_orders(self) -> List[Dict[str, Any]]:
         return self._load_data(self.orders_ws)
 
@@ -108,6 +102,7 @@ class GoogleSheetsDB:
         return self._load_data(self.rush_orders_ws)
     
     def load_system_data(self) -> Dict[str, Any]:
+        """載入系統資料"""
         data = self._load_data(self.system_data_ws)
         result = {}
         for item in data:
@@ -117,232 +112,228 @@ class GoogleSheetsDB:
                 except json.JSONDecodeError:
                     result[item['key']] = item['value'] 
         return result
-
+    
     def save_system_data(self, key: str, value: Any):
-        """儲存系統資料到 SystemData 工作表（key-value 格式）"""
+        """儲存系統資料"""
         if not self.system_data_ws:
-            print("⚠️ SystemData 工作表不存在，無法儲存。")
             return
         
         try:
-            # 1. 將 value 轉換為 JSON 字串（如果是 dict 或 list）
-            if isinstance(value, (dict, list)):
-                value_str = json.dumps(value, ensure_ascii=False)
-            else:
-                value_str = str(value)
-            
-            # 2. 讀取現有資料
+            # 讀取現有資料
             all_data = self.system_data_ws.get_all_values()
+            headers = all_data[0] if all_data else ['key', 'value']
             
-            # 3. 查找是否已有相同的 key
-            key_row_index = None
-            for idx, row in enumerate(all_data):
-                if len(row) > 0 and row[0] == key:
-                    key_row_index = idx + 1  # gspread 的行號從 1 開始
-                    break
+            # 轉換為字典
+            existing_data = {}
+            for row in all_data[1:]:
+                if len(row) >= 2:
+                    existing_data[row[0]] = row[1]
             
-            # 4. 更新或新增
-            if key_row_index:
-                # 更新現有的 key
-                self.system_data_ws.update_cell(key_row_index, 2, value_str)  # 第 2 欄是 value
-                print(f"✅ 已更新 SystemData: {key}")
-            else:
-                # 新增新的 key-value
-                self.system_data_ws.append_row([key, value_str])
-                print(f"✅ 已新增 SystemData: {key}")
+            # 更新或新增
+            value_str = json.dumps(value, ensure_ascii=False) if not isinstance(value, str) else value
+            existing_data[key] = value_str
+            
+            # 寫回
+            self.system_data_ws.clear()
+            self.system_data_ws.append_row(headers)
+            for k, v in existing_data.items():
+                self.system_data_ws.append_row([k, v])
                 
         except Exception as e:
-            print(f"❌ 儲存 SystemData 錯誤: {e}")
-
+            print(f"❌ 儲存系統資料失敗: {e}")
 
     def load_new_orders_from_sheet(self) -> List[Dict[str, Any]]:
-        """從 'read_packing_sheet' 讀取新的訂單數據。"""
-        print(f"\n🔄 正在從 '{READ_ORDERS_SHEET_NAME}' 讀取新的訂單數據...")
-        
+        """從 read_packing_sheet 工作表讀取新訂單"""
         if not self.read_orders_ws:
-            print("⚠️ 找不到讀取工作表，跳過訂單讀取。")
+            print("⚠️ 找不到訂單讀取工作表。")
             return []
-        
-        # 1. 讀取所有資料（包含標頭）
+
         try:
             all_data = self.read_orders_ws.get_all_values()
             if len(all_data) <= 1:
-                print("⚠️ 工作表為空或只有標頭，沒有訂單數據。")
+                print("⚠️ read_packing_sheet 工作表為空或只有標頭。")
                 return []
-        except Exception as e:
-            print(f"❌ 讀取工作表失敗: {e}")
-            return []
-        
-        # 2. 取得標頭並建立欄位索引
-        headers = all_data[0]
-        try:
-            col_order_id = headers.index('order_id')  # 【新增】讀取 order_id
-            col_product_name = headers.index('product_name')
-            col_quantity = headers.index('quantity')
-            col_pending = headers.index('pending')
-            col_order_date = headers.index('Order_Date')
-            col_priority = headers.index('priority')
-            col_status = headers.index('status')
-        except ValueError as e:
-            print(f"❌ 找不到必要欄位: {e}")
-            return []
-        
-        # 3. 解析每一行資料（從第 2 行開始，跳過標頭）
-        parsed_orders = []
-        rows_to_update = []  # 記錄需要更新 status 的行號
-        
-        for row_idx, row in enumerate(all_data[1:], start=2):  # Excel 的行號從 1 開始，標頭是第 1 行
-            # 檢查 status 是否為空
-            status_value = row[col_status].strip() if col_status < len(row) else ""
+
+            headers = all_data[0]
             
-            if status_value:  # 如果 status 不是空的，跳過這一行
-                continue
-            
+            # 找到各欄位的索引
             try:
-                # 讀取各欄位
-                order_id = row[col_order_id].strip() if col_order_id < len(row) else ""  # 【新增】讀取 order_id
-                product_name = row[col_product_name].strip().upper() if col_product_name < len(row) else ""
-                quantity_str = row[col_quantity].strip() if col_quantity < len(row) else "0"
-                pending_str = row[col_pending].strip() if col_pending < len(row) else "0"
-                order_date = row[col_order_date].strip() if col_order_date < len(row) else datetime.now().strftime('%Y-%m-%d')
-                priority = row[col_priority].strip().lower() if col_priority < len(row) else "normal"
-                
-                # 處理數值：移除 "PCS"、逗號等文字
-                def parse_quantity(qty_str):
-                    """將 "10000 PCS" 或 "10000PCS" 轉換為整數 10000"""
-                    qty_str = qty_str.upper().replace('PCS', '').replace(',', '').strip()
-                    try:
-                        return int(qty_str)
-                    except ValueError:
-                        return 0
-                
-                qty_total = parse_quantity(quantity_str)
-                qty_remaining = parse_quantity(pending_str)
-                
-                # 判斷是否為急單
-                is_rush = (priority == "rush")
-                
-                # 驗證資料有效性
-                if not product_name or qty_remaining <= 0:
+                col_order_id = headers.index('order_id')
+                col_priority = headers.index('priority')
+                col_customer = headers.index('customer_name')
+                col_product = headers.index('product_name')
+                col_quantity = headers.index('quantity')
+                col_pending = headers.index('pending')
+                col_order_date = headers.index('Order_Date')
+                col_status = headers.index('status')
+            except ValueError as e:
+                print(f"❌ 找不到必要欄位: {e}")
+                return []
+
+            parsed_orders = []
+            rows_to_update = []
+
+            for row_idx, row in enumerate(all_data[1:], start=2):
+                if len(row) < max(col_order_id, col_priority, col_customer, col_product, col_quantity, col_pending, col_order_date, col_status) + 1:
                     continue
-                
-                # 加入解析結果
+
+                status = row[col_status].strip() if col_status < len(row) else ''
+                if status == '已排程':
+                    continue
+
+                order_id = row[col_order_id].strip()
+                priority = row[col_priority].strip().lower()
+                customer_name = row[col_customer].strip()
+                product_name = row[col_product].strip()
+                quantity_str = row[col_quantity].strip()
+                pending_str = row[col_pending].strip()
+                order_date = row[col_order_date].strip()
+
+                # 解析數量
+                quantity_str = quantity_str.upper().replace('PCS', '').replace(',', '').strip()
+                pending_str = pending_str.upper().replace('PCS', '').replace(',', '').strip()
+
+                try:
+                    qty_total = int(quantity_str) if quantity_str else 0
+                    qty_pending = int(pending_str) if pending_str else qty_total
+                except ValueError:
+                    print(f"⚠️ 第 {row_idx} 行數量格式錯誤，跳過。")
+                    continue
+
+                if qty_pending <= 0:
+                    continue
+
+                is_rush = (priority == 'rush')
+
+                raw_data_dict = {
+                    "order_id": order_id,
+                    "product_name": product_name,
+                    "quantity": f"{qty_total} PCS",
+                    "pending": f"{qty_pending} PCS",
+                    "Order_Date": order_date
+                }
+                raw_data_json = json.dumps(raw_data_dict, ensure_ascii=False)
+
                 parsed_orders.append({
-                    "order_id": order_id,        # 【新增】訂單編號
+                    "order_id": order_id,
                     "product": product_name,
-                    "qty": qty_total,           # 總訂單量
-                    "qty_total": qty_total,      # 總訂單量（用於進度條計算）
-                    "qty_remaining": qty_remaining,  # 待排產數量（pending 欄位）
-                    "due_date": order_date,
+                    "qty": qty_pending,
+                    "qty_remaining": qty_pending,
                     "is_rush": is_rush,
-                    "raw_data": json.dumps({
-                        "order_id": order_id,
-                        "product_name": product_name,
-                        "quantity": quantity_str,
-                        "pending": pending_str,
-                        "Order_Date": order_date,
-                        "priority": priority
-                    }, ensure_ascii=False)
+                    "due_date": order_date,
+                    "raw_data": raw_data_json
                 })
-                
-                # 記錄這一行需要更新 status
-                rows_to_update.append(row_idx)
-                
-            except Exception as e:
-                print(f"⚠️ 解析第 {row_idx} 行時發生錯誤: {e}")
-                continue
-        
-        # 4. 更新已讀取行的 status 為 "已排程"
-        if rows_to_update:
-            try:
-                # 準備批量更新的儲存格範圍
-                cell_list = []
-                for row_idx in rows_to_update:
-                    # H 欄是 status（第 8 欄）
-                    cell = self.read_orders_ws.cell(row_idx, col_status + 1)  # gspread 的欄位索引從 1 開始
-                    cell.value = "已排程"
-                    cell_list.append(cell)
-                
-                # 批量更新
-                self.read_orders_ws.update_cells(cell_list)
-                print(f"✅ 成功讀取 {len(parsed_orders)} 筆新訂單，並更新 status 為「已排程」。")
-                
-            except Exception as e:
-                print(f"⚠️ 更新 status 時發生錯誤: {e}")
-        else:
-            print("ℹ️ 沒有找到 status 為空的新訂單。")
-        
-        return parsed_orders
 
-    # --- 核心儲存函式 ---
-    def save_orders(self, current_orders: List[Dict[str, Any]], rush_orders: List[Dict[str, Any]]):
-        """將當前訂單與急單儲存到 Google Sheets"""
-        if not self.sheet: return
+                rows_to_update.append((row_idx, col_status))
 
-        # 1. 儲存 Orders (常規訂單)
-        if self.orders_ws:
-            headers = ['order_id', 'product', 'qty', 'qty_remaining', 'is_rush', 'due_date', 'raw_packing_sheet', 'date_created']  # 【新增】order_id
-            data_to_save = []
-            for order in current_orders:
-                 data_to_save.append([order.get(h) for h in headers])
+            # 更新 status 欄位為 "已排程"
+            if rows_to_update:
+                cells_to_update = []
+                for row_idx, col_idx in rows_to_update:
+                    cell = self.read_orders_ws.cell(row_idx, col_idx + 1)
+                    cell.value = '已排程'
+                    cells_to_update.append(cell)
+                
+                self.read_orders_ws.update_cells(cells_to_update)
+                print(f"✅ 已更新 {len(cells_to_update)} 筆訂單狀態為「已排程」。")
 
+            print(f"✅ 成功讀取 {len(parsed_orders)} 筆新訂單。")
+            return parsed_orders
+
+        except Exception as e:
+            print(f"❌ 讀取訂單失敗: {e}")
+            return []
+
+    def save_orders(self, orders: List[Dict[str, Any]], rush_orders: List[Dict[str, Any]]):
+        """儲存訂單到 Orders 和 RushOrders 工作表"""
+        if not self.orders_ws or not self.rush_orders_ws:
+            print("⚠️ 無法儲存訂單，工作表不存在。")
+            return
+
+        try:
+            # 清空並重新寫入 Orders
             self.orders_ws.clear()
+            headers = ['order_id', 'product', 'qty', 'qty_remaining', 'is_rush', 'due_date', 'raw_packing_sheet', 'date_created']
             self.orders_ws.append_row(headers)
-            if data_to_save:
-                self.orders_ws.append_rows(data_to_save)
-            print(f"✅ 成功儲存 {len(current_orders)} 筆訂單到 '{ORDERS_SHEET_NAME}' 工作表。")
-
-        # 2. 儲存 RushOrders (急單)
-        if self.rush_orders_ws:
-            headers = ['order_id', 'product', 'qty', 'is_rush', 'qty_total', 'qty_remaining']  # 【新增】order_id
-            data_to_save = []
-            for order in rush_orders:
-                 data_to_save.append([order.get(h) for h in headers])
-
-            self.rush_orders_ws.clear()
-            self.rush_orders_ws.append_row(headers)
-            if data_to_save:
-                self.rush_orders_ws.append_rows(data_to_save)
-            print(f"✅ 成功儲存 {len(rush_orders)} 筆急單到 '{RUSH_ORDERS_SHEET_NAME}' 工作表。")
-
-    def save_schedule_results(self, schedule_result: list):
-        """將排程結果寫入使用者指定的寫入工作表。"""
-        if not schedule_result or not self.schedule_write_ws: return
             
-        print(f"\n💾 正在將排程結果寫入 '{SCHEDULE_WRITE_SHEET_NAME}'...")
-        
-        # 1. 清空舊數據
-        self.schedule_write_ws.clear()
-        
-        # 2. 準備數據 (確保順序和欄位一致)
-        # 【修改】保持原有欄位，不再加入 Actual_Output、Total_Order_Qty、Actual_Complete_Percent
-        headers = ['Day', 'order_id', 'Product', 'Raw_Product_Name', 'Headcount', 'Actual_Hours', 'plan_to', 'Output', 'Complete_Percent', 'Idle_People', 'Status', 'Note', 'priority']
-        self.schedule_write_ws.append_row(headers)
-        
-        records = []
-        for task in schedule_result:
-            records.append([
-                task.get('Day', ''),
-                task.get('order_id', ''),
-                task.get('Product', ''),
-                task.get('Raw_Product_Name', ''),
-                task.get('Headcount', ''),
-                task.get('Actual_Hours', ''),
-                task.get('plan_to', ''),       
-                task.get('Output', ''),
-                task.get('Complete_Percent', ''),
-                task.get('Idle_People', ''),    
-                task.get('Status', ''),
-                task.get('Note', ''),
-                task.get('priority', ''),
-            ])
+            if orders:
+                rows = []
+                for o in orders:
+                    rows.append([
+                        o.get('order_id', ''),
+                        o['product'],
+                        o['qty'],
+                        o['qty_remaining'],
+                        o.get('is_rush', False),
+                        o.get('due_date', ''),
+                        o.get('raw_packing_sheet', ''),
+                        o.get('date_created', '')
+                    ])
+                self.orders_ws.append_rows(rows)
+                print(f"✅ 成功儲存 {len(rows)} 筆訂單到 'Orders' 工作表。")
 
-        # 3. 批量寫入
-        if records:
-            self.schedule_write_ws.append_rows(records)
-            print(f"✅ 成功寫入 {len(records)} 筆排程記錄到 '{SCHEDULE_WRITE_SHEET_NAME}'。")
-        else:
-            print("⚠️ 排程結果為空，未進行寫入。")
+            # 清空並重新寫入 RushOrders
+            self.rush_orders_ws.clear()
+            headers = ['order_id', 'product', 'qty', 'is_rush', 'qty_total', 'qty_remaining']
+            self.rush_orders_ws.append_row(headers)
+            
+            if rush_orders:
+                rows = []
+                for o in rush_orders:
+                    rows.append([
+                        o.get('order_id', ''),
+                        o['product'],
+                        o['qty'],
+                        o.get('is_rush', True),
+                        o.get('qty_total', o['qty']),
+                        o.get('qty_remaining', o['qty'])
+                    ])
+                self.rush_orders_ws.append_rows(rows)
+                print(f"✅ 成功儲存 {len(rows)} 筆急單到 'RushOrders' 工作表。")
+
+        except Exception as e:
+            print(f"❌ 儲存訂單失敗: {e}")
+
+    def save_schedule_results(self, schedule_result: List[Dict[str, Any]]):
+        """儲存排程結果到 percentage(daily_schedule) 工作表"""
+        if not self.schedule_write_ws:
+            print("⚠️ 無法儲存排程結果，工作表不存在。")
+            return
+
+        try:
+            # 清空並重新寫入
+            self.schedule_write_ws.clear()
+            
+            # percentage(daily_schedule) 保持 13 個欄位
+            headers = ['Day', 'order_id', 'Product', 'Raw_Product_Name', 'Headcount', 'Actual_Hours', 'plan_to', 'Output', 'Complete_Percent', 'Idle_People', 'Status', 'Note', 'priority']
+            self.schedule_write_ws.append_row(headers)
+            
+            records = []
+            for task in schedule_result:
+                records.append([
+                    task.get('Day', ''),
+                    task.get('order_id', ''),
+                    task.get('Product', ''),
+                    task.get('Raw_Product_Name', ''),
+                    task.get('Headcount', ''),
+                    task.get('Actual_Hours', ''),
+                    task.get('plan_to', ''),
+                    task.get('Output', ''),
+                    task.get('Complete_Percent', ''),
+                    task.get('Idle_People', ''),
+                    task.get('Status', ''),
+                    task.get('Note', ''),
+                    task.get('priority', ''),
+                ])
+
+            if records:
+                self.schedule_write_ws.append_rows(records)
+                print(f"✅ 成功寫入 {len(records)} 筆排程記錄到 '{SCHEDULE_WRITE_SHEET_NAME}'。")
+            else:
+                print("⚠️ 排程結果為空，未進行寫入。")
+
+        except Exception as e:
+            print(f"❌ 儲存排程結果失敗: {e}")
 
     def load_schedule_results(self) -> List[Dict[str, Any]]:
         """從 percentage(daily_schedule) 工作表讀取排程結果"""
@@ -353,11 +344,10 @@ class GoogleSheetsDB:
         try:
             data = self._load_data(self.schedule_write_ws)
             
-            # 【修改】如果沒有 Raw_Product_Name 欄位，則從 Product 欄位提取
+            # 如果沒有 Raw_Product_Name 欄位，則從 Product 欄位提取
             for record in data:
                 if not record.get('Raw_Product_Name'):
                     product_str = str(record.get('Product', ''))
-                    # 移除 ✅ ☑️ 💡 等符號
                     raw_product = product_str.replace("✅ ", "").replace("☑️ ", "").replace("💡 ", "").strip()
                     record['Raw_Product_Name'] = raw_product
             
@@ -366,9 +356,17 @@ class GoogleSheetsDB:
         except Exception as e:
             print(f"❌ 讀取排程結果失敗: {e}")
             return []
-    
-    def update_actual_outputs(self, actual_output_by_task: dict, days_to_report: int, schedule_data: list, current_orders: list, rush_orders: list):
-        """將實際產量資料寫入 percent 工作表"""
+
+    def save_percent_data(self, actual_output_by_task: dict, days_to_report: int, schedule_data: list, current_orders: list, rush_orders: list):
+        """將實際產量資料寫入 percent 工作表
+        
+        Args:
+            actual_output_by_task: {工序名稱: {'actual': 實際產量, 'product': 產品名稱}}
+            days_to_report: 要回報的天數
+            schedule_data: 排程資料列表
+            current_orders: 當前訂單列表
+            rush_orders: 急單列表
+        """
         if not self.percent_ws:
             print("⚠️ 找不到 percent 工作表。")
             return
@@ -379,19 +377,40 @@ class GoogleSheetsDB:
             print(f"📝 準備將實際產量資料寫入 percent 工作表...")
             print(f"📊 待寫入的工序數量: {len(actual_output_by_task)}")
             
+            # 【新增】清空工作表並重建標題（確保欄位位置正確）
+            self.percent_ws.clear()
+            self.percent_ws.append_row(['Day', 'order_id', 'Product', 'Raw_Product_Name', 'Planned_Output', 'Actual_Output', 'Total_Order_Qty', 'Actual_Complete_Percent', 'Report_Date'])
+            
             # 準備寫入的資料
             records = []
             for task_name, data in actual_output_by_task.items():
-                # 從 schedule_data 中找出對應的工序資料
+                # 【修改】找出所有匹配的工序（可能在多天出現）
                 matching_tasks = [
                     task for task in schedule_data 
                     if task.get('Product', '').replace("✅ ", "").replace("☑️ ", "").replace("💡 ", "").strip() == task_name
+                    and task.get('Day')  # 確保有 Day 欄位
                 ]
                 
                 if not matching_tasks:
+                    print(f"⚠️ 找不到工序 {task_name} 的排程資料")
                     continue
                 
-                task_info = matching_tasks[0]
+                # 【修改】過濾出在報告天數範圍內的工序，並找出最大天數
+                tasks_in_range = []
+                max_day_num = 0
+                for task in matching_tasks:
+                    day_str = task.get('Day', 'Day 0')
+                    try:
+                        day_num = int(day_str.replace('Day ', ''))
+                        if day_num <= days_to_report:
+                            tasks_in_range.append(task)
+                            max_day_num = max(max_day_num, day_num)
+                    except:
+                        continue
+                
+                if not tasks_in_range:
+                    continue
+                
                 actual_qty = data['actual']
                 product_name = data['product']
                 
@@ -411,14 +430,19 @@ class GoogleSheetsDB:
                 except (ValueError, TypeError):
                     percent = 0
                 
-                # 準備記錄
+                # 【修改】計算所有天數的總計劃產量
+                total_planned_output = sum(task.get('Output', 0) for task in tasks_in_range)
+                
+                # 【修改】只記錄最後一天的數據，但計劃產量是所有天數的累計
+                last_day_task = next((t for t in tasks_in_range if t.get('Day') == f'Day {max_day_num}'), tasks_in_range[0])
+                
                 records.append([
-                    task_info.get('Day', ''),
-                    task_info.get('order_id', ''),
+                    f'Day {max_day_num}',  # 記錄到最後一天
+                    last_day_task.get('order_id', ''),
                     task_name,
                     product_name,
-                    task_info.get('Output', ''),
-                    actual_qty,
+                    total_planned_output,  # 累計的計劃產量
+                    actual_qty,  # 累計的實際產量
                     total_order_qty,
                     f"{percent}%",
                     datetime.now().strftime('%Y-%m-%d %H:%M:%S')

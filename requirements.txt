@@ -1,0 +1,13 @@
+langchain
+langgraph
+langchain-google-genai
+pandas
+openpyxl
+pymongo
+python-dotenv
+configparser
+gspread
+oauth2client
+tabulate
+openpyxl
+pillow
